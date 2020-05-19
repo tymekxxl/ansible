@@ -1274,7 +1274,7 @@ class Request:
             request.add_header('cache-control', 'no-cache')
         # or we do it if the original is more recent than our copy
         elif last_mod_time:
-            tstamp = rfc2822_date_string(last_mod_time.timetuple())
+            tstamp = rfc2822_date_string(last_mod_time.timetuple(), 'GMT')
             request.add_header('If-Modified-Since', tstamp)
 
         # user defined headers now, which may override things we've set above
@@ -1435,7 +1435,7 @@ def fetch_url(module, url, data=None, headers=None, method=None,
     :kwarg ca_path: (optional) String of file system path to CA cert bundle to use
 
     :returns: A tuple of (**response**, **info**). Use ``response.read()`` to read the data.
-        The **info** contains the 'status' and other meta data. When a HttpError (status > 400)
+        The **info** contains the 'status' and other meta data. When a HttpError (status >= 400)
         occurred then ``info['body']`` contains the error response data::
 
     Example::

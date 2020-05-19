@@ -343,7 +343,7 @@ class FieldAttributeBase(with_metaclass(BaseMeta, object)):
         elif attribute.isa == 'float':
             value = float(value)
         elif attribute.isa == 'bool':
-            value = boolean(value, strict=False)
+            value = boolean(value, strict=True)
         elif attribute.isa == 'percent':
             # special value, which may be an integer or float
             # with an optional '%' at the end
@@ -508,8 +508,8 @@ class FieldAttributeBase(with_metaclass(BaseMeta, object)):
         # Due to where _extend_value may run for some attributes
         # it is possible to end up with Sentinel in the list of values
         # ensure we strip them
-        value[:] = [v for v in value if v is not Sentinel]
-        new_value[:] = [v for v in new_value if v is not Sentinel]
+        value = [v for v in value if v is not Sentinel]
+        new_value = [v for v in new_value if v is not Sentinel]
 
         if prepend:
             combined = new_value + value

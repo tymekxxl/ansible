@@ -6,21 +6,15 @@ __metaclass__ = type
 
 import os
 import os.path
-import pkgutil
 import re
 import sys
 
 from types import ModuleType
 
 from ansible.module_utils._text import to_bytes, to_native, to_text
+from ansible.module_utils.compat.importlib import import_module
 from ansible.module_utils.six import iteritems, string_types, with_metaclass
 from ansible.utils.singleton import Singleton
-
-# HACK: keep Python 2.6 controller tests happy in CI until they're properly split
-try:
-    from importlib import import_module
-except ImportError:
-    import_module = __import__
 
 _SYNTHETIC_PACKAGES = {
     # these provide fallback package definitions when there are no on-disk paths
@@ -38,17 +32,33 @@ _SYNTHETIC_PACKAGES = {
 class AnsibleCollectionLoader(with_metaclass(Singleton, object)):
     def __init__(self, config=None):
         if config:
-            self._n_configured_paths = config.get_config_value('COLLECTIONS_PATHS')
+            paths = config.get_config_value('COLLECTIONS_PATHS')
         else:
-            self._n_configured_paths = os.environ.get('ANSIBLE_COLLECTIONS_PATHS', '').split(os.pathsep)
+            paths = os.environ.get('ANSIBLE_COLLECTIONS_PATHS', '').split(os.pathsep)
 
-        if isinstance(self._n_configured_paths, string_types):
-            self._n_configured_paths = [self._n_configured_paths]
-        elif self._n_configured_paths is None:
-            self._n_configured_paths = []
+        if isinstance(paths, string_types):
+            paths = [paths]
+        elif paths is None:
+            paths = []
 
         # expand any placeholders in configured paths
-        self._n_configured_paths = [to_native(os.path.expanduser(p), errors='surrogate_or_strict') for p in self._n_configured_paths]
+        paths = [
+            to_native(os.path.expanduser(p), errors='surrogate_or_strict')
+            for p in paths
+        ]
+
+        # Append all ``ansible_collections`` dirs from sys.path to the end
+        for path in sys.path:
+            if (
+                    path not in paths and
+                    os.path.isdir(to_bytes(
+                        os.path.join(path, 'ansible_collections'),
+                        errors='surrogate_or_strict',
+                    ))
+            ):
+                paths.append(path)
+
+        self._n_configured_paths = paths
 
         self._n_playbook_paths = []
         self._default_collection = None
@@ -290,6 +300,15 @@ class AnsibleFlatMapLoader(object):
         for root, dirs, files in os.walk(root_path):
             # add all files in this dir that don't have a blacklisted extension
             flat_files.extend(((root, f) for f in files if not any((f.endswith(ext) for ext in self._extension_blacklist))))
+
+        # HACK: Put Windows modules at the end of the list. This makes collection_loader behave
+        # the same way as plugin loader, preventing '.ps1' from modules being selected before '.py'
+        # modules simply because '.ps1' files may be above '.py' files in the flat_files list.
+        #
+        # The expected sort order is paths in the order they were in 'flat_files'
+        # with paths ending in '/windows' at the end, also in the original order they were
+        # in 'flat_files'. The .sort() method is guaranteed to be stable, so original order is preserved.
+        flat_files.sort(key=lambda p: p[0].endswith('/windows'))
         self._dirtree = flat_files
 
     def find_file(self, filename):
@@ -489,7 +508,6 @@ def get_collection_role_path(role_name, collection_list=None):
 
     if acr:
         # looks like a valid qualified collection ref; skip the collection_list
-        role = acr.resource
         collection_list = [acr.collection]
         subdirs = acr.subdirs
         resource = acr.resource
@@ -532,9 +550,9 @@ def get_collection_name_from_path(path):
     :param n_path: native-string path to evaluate for collection containment
     :return: collection name or None
     """
-    n_collection_paths = [to_native(os.path.realpath(to_bytes(p))) for p in AnsibleCollectionLoader().n_collection_paths]
+    n_collection_paths = [to_native(os.path.abspath(to_bytes(p))) for p in AnsibleCollectionLoader().n_collection_paths]
 
-    b_path = os.path.realpath(to_bytes(path))
+    b_path = os.path.abspath(to_bytes(path))
     n_path = to_native(b_path)
 
     for coll_path in n_collection_paths:
@@ -557,7 +575,7 @@ def get_collection_name_from_path(path):
                 return None
 
             # ensure we're using the canonical real path, with the bogus __synthetic__ stripped off
-            b_loaded_collection_path = os.path.dirname(os.path.realpath(to_bytes(loaded_collection_path)))
+            b_loaded_collection_path = os.path.dirname(os.path.abspath(to_bytes(loaded_collection_path)))
 
             # if the collection path prefix matches the path prefix we were passed, it's the same collection that's loaded
             if os.path.commonprefix([b_path, b_loaded_collection_path]) == b_loaded_collection_path:
@@ -568,3 +586,18 @@ def get_collection_name_from_path(path):
 
 def set_collection_playbook_paths(b_playbook_paths):
     AnsibleCollectionLoader().set_playbook_paths(b_playbook_paths)
+
+
+def resource_from_fqcr(ref):
+    """
+    Return resource from a fully-qualified collection reference,
+    or from a simple resource name.
+
+    For fully-qualified collection references, this is equivalent to
+    ``AnsibleCollectionRef.from_fqcr(ref).resource``.
+
+    :param ref: collection reference to parse
+    :return: the resource as a unicode string
+    """
+    ref = to_text(ref, errors='strict')
+    return ref.split(u'.')[-1]

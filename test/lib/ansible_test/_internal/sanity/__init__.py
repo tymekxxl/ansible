@@ -4,12 +4,15 @@ __metaclass__ = type
 
 import abc
 import glob
-import json
 import os
 import re
 import collections
 
 from .. import types as t
+
+from ..io import (
+    read_json_file,
+)
 
 from ..util import (
     ApplicationError,
@@ -393,6 +396,11 @@ class SanityIgnoreParser:
                 if len(error_codes) > 1:
                     self.parse_errors.append((line_no, len(path) + len(test_name) + len(error_code) + 3, "Error code cannot contain multiple ':' characters"))
                     continue
+
+                if error_code in test.optional_error_codes:
+                    self.parse_errors.append((line_no, len(path) + len(test_name) + 3, "Optional error code '%s' cannot be ignored" % (
+                        error_code)))
+                    continue
             else:
                 if error_codes:
                     self.parse_errors.append((line_no, len(path) + len(test_name) + 2, "Sanity test '%s' does not support error codes" % test_name))
@@ -467,6 +475,9 @@ class SanityIgnoreProcessor:
         filtered = []
 
         for message in messages:
+            if message.code in self.test.optional_error_codes and not self.args.enable_optional_errors:
+                continue
+
             path_entry = self.ignore_entries.get(message.path)
 
             if path_entry:
@@ -608,6 +619,12 @@ class SanityTest(ABC):
         self.name = name
         self.enabled = True
 
+        # Optional error codes represent errors which spontaneously occur without changes to the content under test, such as those based on the current date.
+        # Because these errors can be unpredictable they behave differently than normal error codes:
+        #  * They are not reported by default. The `--enable-optional-errors` option must be used to display these errors.
+        #  * They cannot be ignored. This is done to maintain the integrity of the ignore system.
+        self.optional_error_codes = set()
+
     @property
     def error_code(self):  # type: () -> t.Optional[str]
         """Error code for ansible-test matching the format used by the underlying test program, or None if the program does not use error codes."""
@@ -648,7 +665,7 @@ class SanityTest(ABC):
         """A tuple of supported Python versions or None if the test does not depend on specific Python versions."""
         return tuple(python_version for python_version in SUPPORTED_PYTHON_VERSIONS if python_version.startswith('3.'))
 
-    def filter_targets(self, targets):  # type: (t.List[TestTarget]) -> t.List[TestTarget]
+    def filter_targets(self, targets):  # type: (t.List[TestTarget]) -> t.List[TestTarget]  # pylint: disable=unused-argument
         """Return the given list of test targets, filtered to include only those relevant for the test."""
         if self.no_targets:
             return []
@@ -669,8 +686,7 @@ class SanityCodeSmellTest(SanityTest):
         self.config = None
 
         if self.config_path:
-            with open(self.config_path, 'r') as config_fd:
-                self.config = json.load(config_fd)
+            self.config = read_json_file(self.config_path)
 
         if self.config:
             self.enabled = not self.config.get('disabled')

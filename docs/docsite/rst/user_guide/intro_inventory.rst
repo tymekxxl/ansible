@@ -19,7 +19,7 @@ Inventory basics: formats, hosts, and groups
 ============================================
 
 The inventory file can be in one of many formats, depending on the inventory plugins you have.
-The most common formats are INI and YAML. A basic INI ``etc/ansible/hosts`` might look like this:
+The most common formats are INI and YAML. A basic INI ``/etc/ansible/hosts`` might look like this:
 
 .. code-block:: text
 
@@ -36,6 +36,7 @@ The most common formats are INI and YAML. A basic INI ``etc/ansible/hosts`` migh
 
 The headings in brackets are group names, which are used in classifying hosts
 and deciding what hosts you are controlling at what times and for what purpose.
+Group names should follow the same guidelines as :ref:`valid_variable_names`.
 
 Here's that same basic inventory file in YAML format:
 
@@ -175,6 +176,8 @@ For numeric patterns, leading zeros can be included or removed, as desired. Rang
 
     [databases]
     db-[a:f].example.com
+
+.. _variables_in_inventory:
 
 Adding variables to inventory
 =============================
@@ -660,6 +663,8 @@ For a full list with available plugins and examples, see :ref:`connection_plugin
 
 Inventory setup examples
 ========================
+
+See also :ref:`sample_setup`, which shows inventory along with playbooks and other Ansible artifacts.
 
 .. _inventory_setup-per_environment:
 

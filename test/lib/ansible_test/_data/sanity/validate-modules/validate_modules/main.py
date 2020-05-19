@@ -32,8 +32,10 @@ import traceback
 
 from collections import OrderedDict
 from contextlib import contextmanager
-from distutils.version import StrictVersion
+from distutils.version import StrictVersion, LooseVersion
 from fnmatch import fnmatch
+
+import yaml
 
 from ansible import __version__ as ansible_version
 from ansible.executor.module_common import REPLACER_WINDOWS
@@ -42,6 +44,7 @@ from ansible.module_utils._text import to_bytes
 from ansible.plugins.loader import fragment_loader
 from ansible.utils.collection_loader import AnsibleCollectionLoader
 from ansible.utils.plugin_docs import BLACKLIST, add_fragments, get_docstring
+from ansible.utils.version import SemanticVersion
 
 from .module_args import AnsibleModuleImportError, AnsibleModuleNotInitialized, get_argument_spec
 
@@ -50,8 +53,7 @@ from .schema import ansible_module_kwargs_schema, doc_schema, metadata_1_1_schem
 from .utils import CaptureStd, NoArgsAnsibleModule, compare_unordered_lists, is_empty, parse_yaml
 from voluptuous.humanize import humanize_error
 
-from ansible.module_utils.six import PY3, with_metaclass
-from ansible.module_utils.basic import FILE_COMMON_ARGUMENTS
+from ansible.module_utils.six import PY3, with_metaclass, string_types
 
 if PY3:
     # Because there is no ast.TryExcept in Python 3 ast module
@@ -85,6 +87,9 @@ BLACKLIST_IMPORTS = {
 }
 SUBPROCESS_REGEX = re.compile(r'subprocess\.Po.*')
 OS_CALL_REGEX = re.compile(r'os\.call.*')
+
+
+LOOSE_ANSIBLE_VERSION = LooseVersion('.'.join(ansible_version.split('.')[:3]))
 
 
 class ReporterEncoder(json.JSONEncoder):
@@ -238,7 +243,8 @@ class ModuleValidator(Validator):
 
     WHITELIST_FUTURE_IMPORTS = frozenset(('absolute_import', 'division', 'print_function'))
 
-    def __init__(self, path, analyze_arg_spec=False, collection=None, base_branch=None, git_cache=None, reporter=None):
+    def __init__(self, path, analyze_arg_spec=False, collection=None, collection_version=None,
+                 base_branch=None, git_cache=None, reporter=None, routing=None):
         super(ModuleValidator, self).__init__(reporter=reporter or Reporter())
 
         self.path = path
@@ -247,7 +253,15 @@ class ModuleValidator(Validator):
 
         self.analyze_arg_spec = analyze_arg_spec
 
+        self.Version = LooseVersion
+
         self.collection = collection
+        self.routing = routing
+        self.collection_version = None
+        if collection_version is not None:
+            self.Version = SemanticVersion
+            self.collection_version_str = collection_version
+            self.collection_version = self.Version(collection_version)
 
         self.base_branch = base_branch
         self.git_cache = git_cache or GitCache()
@@ -883,6 +897,7 @@ class ModuleValidator(Validator):
         deprecated = False
         removed = False
         doc_deprecated = None  # doc legally might not exist
+        routing_says_deprecated = False
 
         if self.object_name.startswith('_') and not os.path.islink(self.object_path):
             filename_deprecated_or_removed = True
@@ -924,6 +939,12 @@ class ModuleValidator(Validator):
                         code='missing-metadata-status',
                         msg='ANSIBLE_METADATA.status must be exactly one of "deprecated" or "removed"'
                     )
+        else:
+            # We are testing a collection
+            if self.routing and self.routing.get('plugin_routing', {}).get('modules', {}).get(self.name, {}).get('deprecation', {}):
+                # meta/routing.yml says this is deprecated
+                routing_says_deprecated = True
+                deprecated = True
 
         if not removed:
             if not bool(doc_info['DOCUMENTATION']['value']):
@@ -996,7 +1017,8 @@ class ModuleValidator(Validator):
                             doc,
                             doc_schema(
                                 os.readlink(self.object_path).split('.')[0],
-                                version_added=not bool(self.collection)
+                                version_added=not bool(self.collection),
+                                deprecated_module=deprecated,
                             ),
                             'DOCUMENTATION',
                             'invalid-documentation',
@@ -1007,7 +1029,8 @@ class ModuleValidator(Validator):
                             doc,
                             doc_schema(
                                 self.object_name.split('.')[0],
-                                version_added=not bool(self.collection)
+                                version_added=not bool(self.collection),
+                                deprecated_module=deprecated,
                             ),
                             'DOCUMENTATION',
                             'invalid-documentation',
@@ -1071,23 +1094,42 @@ class ModuleValidator(Validator):
                     )
 
         # Check for mismatched deprecation
-        mismatched_deprecation = True
-        if not (filename_deprecated_or_removed or removed or deprecated or doc_deprecated):
-            mismatched_deprecation = False
-        else:
-            if (filename_deprecated_or_removed and deprecated and doc_deprecated):
+        if not self.collection:
+            mismatched_deprecation = True
+            if not (filename_deprecated_or_removed or removed or deprecated or doc_deprecated):
                 mismatched_deprecation = False
-            if (filename_deprecated_or_removed and removed and not (documentation_exists or examples_exist or returns_exist)):
-                mismatched_deprecation = False
+            else:
+                if (filename_deprecated_or_removed and deprecated and doc_deprecated):
+                    mismatched_deprecation = False
+                if (filename_deprecated_or_removed and removed and not (documentation_exists or examples_exist or returns_exist)):
+                    mismatched_deprecation = False
 
-        if mismatched_deprecation:
-            self.reporter.error(
-                path=self.object_path,
-                code='deprecation-mismatch',
-                msg='Module deprecation/removed must agree in Metadata, by prepending filename with'
-                    ' "_", and setting DOCUMENTATION.deprecated for deprecation or by removing all'
-                    ' documentation for removed'
-            )
+            if mismatched_deprecation:
+                self.reporter.error(
+                    path=self.object_path,
+                    code='deprecation-mismatch',
+                    msg='Module deprecation/removed must agree in Metadata, by prepending filename with'
+                        ' "_", and setting DOCUMENTATION.deprecated for deprecation or by removing all'
+                        ' documentation for removed'
+                )
+        else:
+            # We are testing a collection
+            if self.object_name.startswith('_'):
+                self.reporter.error(
+                    path=self.object_path,
+                    code='collections-no-underscore-on-deprecation',
+                    msg='Deprecated content in collections MUST NOT start with "_", update meta/routing.yml instead',
+                )
+
+            if not (doc_deprecated == routing_says_deprecated):
+                # DOCUMENTATION.deprecated and meta/routing.yml disagree
+                self.reporter.error(
+                    path=self.object_path,
+                    code='deprecation-mismatch',
+                    msg='"meta/routing.yml" and DOCUMENTATION.deprecation do not agree.'
+                )
+
+            # In the future we should error if ANSIBLE_METADATA exists in a collection
 
         return doc_info, doc
 
@@ -1149,11 +1191,204 @@ class ModuleValidator(Validator):
             )
             return
 
-        self._validate_docs_schema(kwargs, ansible_module_kwargs_schema, 'AnsibleModule', 'invalid-ansiblemodule-schema')
+        self._validate_docs_schema(kwargs, ansible_module_kwargs_schema(), 'AnsibleModule', 'invalid-ansiblemodule-schema')
 
         self._validate_argument_spec(docs, spec, kwargs)
 
-    def _validate_argument_spec(self, docs, spec, kwargs, context=None):
+    def _validate_list_of_module_args(self, name, terms, spec, context):
+        if terms is None:
+            return
+        if not isinstance(terms, (list, tuple)):
+            # This is already reported by schema checking
+            return
+        for check in terms:
+            if not isinstance(check, (list, tuple)):
+                # This is already reported by schema checking
+                continue
+            bad_term = False
+            for term in check:
+                if not isinstance(term, string_types):
+                    msg = name
+                    if context:
+                        msg += " found in %s" % " -> ".join(context)
+                    msg += " must contain strings in the lists or tuples; found value %r" % (term, )
+                    self.reporter.error(
+                        path=self.object_path,
+                        code=name + '-type',
+                        msg=msg,
+                    )
+                    bad_term = True
+            if bad_term:
+                continue
+            if len(set(check)) != len(check):
+                msg = name
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " has repeated terms"
+                self.reporter.error(
+                    path=self.object_path,
+                    code=name + '-collision',
+                    msg=msg,
+                )
+            if not set(check) <= set(spec):
+                msg = name
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " contains terms which are not part of argument_spec: %s" % ", ".join(sorted(set(check).difference(set(spec))))
+                self.reporter.error(
+                    path=self.object_path,
+                    code=name + '-unknown',
+                    msg=msg,
+                )
+
+    def _validate_required_if(self, terms, spec, context, module):
+        if terms is None:
+            return
+        if not isinstance(terms, (list, tuple)):
+            # This is already reported by schema checking
+            return
+        for check in terms:
+            if not isinstance(check, (list, tuple)) or len(check) not in [3, 4]:
+                # This is already reported by schema checking
+                continue
+            if len(check) == 4 and not isinstance(check[3], bool):
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " must have forth value omitted or of type bool; got %r" % (check[3], )
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-is_one_of-type',
+                    msg=msg,
+                )
+            requirements = check[2]
+            if not isinstance(requirements, (list, tuple)):
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " must have third value (requirements) being a list or tuple; got type %r" % (requirements, )
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-requirements-type',
+                    msg=msg,
+                )
+                continue
+            bad_term = False
+            for term in requirements:
+                if not isinstance(term, string_types):
+                    msg = "required_if"
+                    if context:
+                        msg += " found in %s" % " -> ".join(context)
+                    msg += " must have only strings in third value (requirements); got %r" % (term, )
+                    self.reporter.error(
+                        path=self.object_path,
+                        code='required_if-requirements-type',
+                        msg=msg,
+                    )
+                    bad_term = True
+            if bad_term:
+                continue
+            if len(set(requirements)) != len(requirements):
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " has repeated terms in requirements"
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-requirements-collision',
+                    msg=msg,
+                )
+            if not set(requirements) <= set(spec):
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " contains terms in requirements which are not part of argument_spec: %s" % ", ".join(sorted(set(requirements).difference(set(spec))))
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-requirements-unknown',
+                    msg=msg,
+                )
+            key = check[0]
+            if key not in spec:
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " must have its key %s in argument_spec" % key
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-unknown-key',
+                    msg=msg,
+                )
+                continue
+            if key in requirements:
+                msg = "required_if"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " contains its key %s in requirements" % key
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_if-key-in-requirements',
+                    msg=msg,
+                )
+            value = check[1]
+            if value is not None:
+                _type = spec[key].get('type', 'str')
+                if callable(_type):
+                    _type_checker = _type
+                else:
+                    _type_checker = module._CHECK_ARGUMENT_TYPES_DISPATCHER.get(_type)
+                try:
+                    with CaptureStd():
+                        dummy = _type_checker(value)
+                except (Exception, SystemExit):
+                    msg = "required_if"
+                    if context:
+                        msg += " found in %s" % " -> ".join(context)
+                    msg += " has value %r which does not fit to %s's parameter type %r" % (value, key, _type)
+                    self.reporter.error(
+                        path=self.object_path,
+                        code='required_if-value-type',
+                        msg=msg,
+                    )
+
+    def _validate_required_by(self, terms, spec, context):
+        if terms is None:
+            return
+        if not isinstance(terms, Mapping):
+            # This is already reported by schema checking
+            return
+        for key, value in terms.items():
+            if isinstance(value, string_types):
+                value = [value]
+            if not isinstance(value, (list, tuple)):
+                # This is already reported by schema checking
+                continue
+            for term in value:
+                if not isinstance(term, string_types):
+                    # This is already reported by schema checking
+                    continue
+            if len(set(value)) != len(value) or key in value:
+                msg = "required_by"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " has repeated terms"
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_by-collision',
+                    msg=msg,
+                )
+            if not set(value) <= set(spec) or key not in spec:
+                msg = "required_by"
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " contains terms which are not part of argument_spec: %s" % ", ".join(sorted(set(value).difference(set(spec))))
+                self.reporter.error(
+                    path=self.object_path,
+                    code='required_by-unknown',
+                    msg=msg,
+                )
+
+    def _validate_argument_spec(self, docs, spec, kwargs, context=None, last_context_spec=None):
         if not self.analyze_arg_spec:
             return
 
@@ -1162,6 +1397,9 @@ class ModuleValidator(Validator):
 
         if context is None:
             context = []
+
+        if last_context_spec is None:
+            last_context_spec = kwargs
 
         try:
             if not context:
@@ -1173,11 +1411,47 @@ class ModuleValidator(Validator):
         # Use this to access type checkers later
         module = NoArgsAnsibleModule({})
 
+        self._validate_list_of_module_args('mutually_exclusive', last_context_spec.get('mutually_exclusive'), spec, context)
+        self._validate_list_of_module_args('required_together', last_context_spec.get('required_together'), spec, context)
+        self._validate_list_of_module_args('required_one_of', last_context_spec.get('required_one_of'), spec, context)
+        self._validate_required_if(last_context_spec.get('required_if'), spec, context, module)
+        self._validate_required_by(last_context_spec.get('required_by'), spec, context)
+
         provider_args = set()
         args_from_argspec = set()
         deprecated_args_from_argspec = set()
         doc_options = docs.get('options', {})
+        if doc_options is None:
+            doc_options = {}
         for arg, data in spec.items():
+            restricted_argument_names = ('message', 'syslog_facility')
+            if arg.lower() in restricted_argument_names:
+                msg = "Argument '%s' in argument_spec " % arg
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += "must not be one of %s as it is used " \
+                       "internally by Ansible Core Engine" % (",".join(restricted_argument_names))
+                self.reporter.error(
+                    path=self.object_path,
+                    code='invalid-argument-name',
+                    msg=msg,
+                )
+                continue
+            if 'aliases' in data:
+                for al in data['aliases']:
+                    if al.lower() in restricted_argument_names:
+                        msg = "Argument alias '%s' in argument_spec " % al
+                        if context:
+                            msg += " found in %s" % " -> ".join(context)
+                        msg += "must not be one of %s as it is used " \
+                               "internally by Ansible Core Engine" % (",".join(restricted_argument_names))
+                        self.reporter.error(
+                            path=self.object_path,
+                            code='invalid-argument-name',
+                            msg=msg,
+                        )
+                        continue
+
             if not isinstance(data, dict):
                 msg = "Argument '%s' in argument_spec" % arg
                 if context:
@@ -1189,6 +1463,74 @@ class ModuleValidator(Validator):
                     msg=msg,
                 )
                 continue
+
+            if not self.collection or self.collection_version is not None:
+                if self.collection:
+                    compare_version = self.collection_version
+                    version_of_what = "this collection (%s)" % self.collection_version_str
+                    version_parser_error = "the version number is not a valid semantic version (https://semver.org/)"
+                    code_prefix = 'collection'
+                else:
+                    compare_version = LOOSE_ANSIBLE_VERSION
+                    version_of_what = "Ansible (%s)" % ansible_version
+                    version_parser_error = "the version number cannot be parsed"
+                    code_prefix = 'ansible'
+
+                removed_in_version = data.get('removed_in_version', None)
+                if removed_in_version is not None:
+                    try:
+                        if compare_version >= self.Version(str(removed_in_version)):
+                            msg = "Argument '%s' in argument_spec" % arg
+                            if context:
+                                msg += " found in %s" % " -> ".join(context)
+                            msg += " has a deprecated removed_in_version '%s'," % removed_in_version
+                            msg += " i.e. the version is less than or equal to the current version of %s" % version_of_what
+                            self.reporter.error(
+                                path=self.object_path,
+                                code=code_prefix + '-deprecated-version',
+                                msg=msg,
+                            )
+                    except ValueError:
+                        msg = "Argument '%s' in argument_spec" % arg
+                        if context:
+                            msg += " found in %s" % " -> ".join(context)
+                        msg += " has an invalid removed_in_version '%s'," % removed_in_version
+                        msg += " i.e. %s" % version_parser_error
+                        self.reporter.error(
+                            path=self.object_path,
+                            code=code_prefix + '-invalid-version',
+                            msg=msg,
+                        )
+
+                deprecated_aliases = data.get('deprecated_aliases', None)
+                if deprecated_aliases is not None:
+                    for deprecated_alias in deprecated_aliases:
+                        try:
+                            if compare_version >= self.Version(str(deprecated_alias['version'])):
+                                msg = "Argument '%s' in argument_spec" % arg
+                                if context:
+                                    msg += " found in %s" % " -> ".join(context)
+                                msg += " has deprecated aliases '%s' with removal in version '%s'," % (
+                                    deprecated_alias['name'], deprecated_alias['version'])
+                                msg += " i.e. the version is less than or equal to the current version of %s" % version_of_what
+                                self.reporter.error(
+                                    path=self.object_path,
+                                    code=code_prefix + '-deprecated-version',
+                                    msg=msg,
+                                )
+                        except ValueError:
+                            msg = "Argument '%s' in argument_spec" % arg
+                            if context:
+                                msg += " found in %s" % " -> ".join(context)
+                            msg += " has aliases '%s' with removal in invalid version '%s'," % (
+                                deprecated_alias['name'], deprecated_alias['version'])
+                            msg += " i.e. %s" % version_parser_error
+                            self.reporter.error(
+                                path=self.object_path,
+                                code=code_prefix + '-invalid-version',
+                                msg=msg,
+                            )
+
             aliases = data.get('aliases', [])
             if arg in aliases:
                 msg = "Argument '%s' in argument_spec" % arg
@@ -1210,6 +1552,13 @@ class ModuleValidator(Validator):
                     code='parameter-alias-repeated',
                     msg=msg
                 )
+            if not context and arg == 'state':
+                bad_states = set(['list', 'info', 'get']) & set(data.get('choices', set()))
+                for bad_state in bad_states:
+                    self.reporter.error(
+                        path=self.object_path,
+                        code='parameter-state-invalid-choice',
+                        msg="Argument 'state' includes the value '%s' as a choice" % bad_state)
             if not data.get('removed_in_version', None):
                 args_from_argspec.add(arg)
                 args_from_argspec.update(aliases)
@@ -1253,6 +1602,16 @@ class ModuleValidator(Validator):
                 _type_checker = module._CHECK_ARGUMENT_TYPES_DISPATCHER.get(_type)
 
             _elements = data.get('elements')
+            if (_type == 'list') and not _elements:
+                msg = "Argument '%s' in argument_spec" % arg
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " defines type as list but elements is not defined"
+                self.reporter.error(
+                    path=self.object_path,
+                    code='parameter-list-no-elements',
+                    msg=msg
+                )
             if _elements:
                 if not callable(_elements):
                     module._CHECK_ARGUMENT_TYPES_DISPATCHER.get(_elements)
@@ -1377,7 +1736,7 @@ class ModuleValidator(Validator):
                     msg = "Argument '%s' in argument_spec" % arg
                     if context:
                         msg += " found in %s" % " -> ".join(context)
-                    msg += "implies type as 'str' but documentation defines as %r" % doc_type
+                    msg += " implies type as 'str' but documentation defines as %r" % doc_type
                     self.reporter.error(
                         path=self.object_path,
                         code='implied-parameter-type-mismatch',
@@ -1451,6 +1810,37 @@ class ModuleValidator(Validator):
                     msg=msg
                 )
 
+            doc_elements = doc_options_arg.get('elements', None)
+            doc_type = doc_options_arg.get('type', 'str')
+            data_elements = data.get('elements', None)
+            if (doc_elements and not doc_type == 'list'):
+                msg = "Argument '%s " % arg
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                msg += " defines parameter elements as %s but it is valid only when value of parameter type is list" % doc_elements
+                self.reporter.error(
+                    path=self.object_path,
+                    code='doc-elements-invalid',
+                    msg=msg
+                )
+            if (doc_elements or data_elements) and not (doc_elements == data_elements):
+                msg = "Argument '%s' in argument_spec" % arg
+                if context:
+                    msg += " found in %s" % " -> ".join(context)
+                if data_elements:
+                    msg += " specifies elements as %s," % data_elements
+                else:
+                    msg += " does not specify elements,"
+                if doc_elements:
+                    msg += "but elements is documented as being %s" % doc_elements
+                else:
+                    msg += "but elements is not documented"
+                self.reporter.error(
+                    path=self.object_path,
+                    code='doc-elements-mismatch',
+                    msg=msg
+                )
+
             spec_suboptions = data.get('options')
             doc_suboptions = doc_options_arg.get('suboptions', {})
             if spec_suboptions:
@@ -1464,7 +1854,8 @@ class ModuleValidator(Validator):
                         code='missing-suboption-docs',
                         msg=msg
                     )
-                self._validate_argument_spec({'options': doc_suboptions}, spec_suboptions, kwargs, context=context + [arg])
+                self._validate_argument_spec({'options': doc_suboptions}, spec_suboptions, kwargs,
+                                             context=context + [arg], last_context_spec=data)
 
         for arg in args_from_argspec:
             if not str(arg).isidentifier():
@@ -1479,26 +1870,14 @@ class ModuleValidator(Validator):
                 )
 
         if docs:
-            file_common_arguments = set()
-            for arg, data in FILE_COMMON_ARGUMENTS.items():
-                file_common_arguments.add(arg)
-                file_common_arguments.update(data.get('aliases', []))
-
             args_from_docs = set()
             for arg, data in doc_options.items():
                 args_from_docs.add(arg)
                 args_from_docs.update(data.get('aliases', []))
 
-            # add_file_common_args is only of interest on top-level
-            add_file_common_args = kwargs.get('add_file_common_args', False) and not context
-
             args_missing_from_docs = args_from_argspec.difference(args_from_docs)
             docs_missing_from_args = args_from_docs.difference(args_from_argspec | deprecated_args_from_argspec)
             for arg in args_missing_from_docs:
-                # args_from_argspec contains undocumented argument
-                if add_file_common_args and arg in file_common_arguments:
-                    # add_file_common_args is handled in AnsibleModule, and not exposed earlier
-                    continue
                 if arg in provider_args:
                     # Provider args are being removed from network module top level
                     # So they are likely not documented on purpose
@@ -1513,10 +1892,6 @@ class ModuleValidator(Validator):
                     msg=msg
                 )
             for arg in docs_missing_from_args:
-                # args_from_docs contains argument not in the argument_spec
-                if add_file_common_args and arg in file_common_arguments:
-                    # add_file_common_args is handled in AnsibleModule, and not exposed earlier
-                    continue
                 msg = "Argument '%s'" % arg
                 if context:
                     msg += " found in %s" % " -> ".join(context)
@@ -1837,18 +2212,32 @@ def run():
                              'validating files within a collection. Ensure '
                              'that ANSIBLE_COLLECTIONS_PATHS is set so the '
                              'contents of the collection can be located')
+    parser.add_argument('--collection-version',
+                        help='The collection\'s version number used to check '
+                             'deprecations')
 
     args = parser.parse_args()
 
-    args.modules[:] = [m.rstrip('/') for m in args.modules]
+    args.modules = [m.rstrip('/') for m in args.modules]
 
     reporter = Reporter()
     git_cache = GitCache(args.base_branch)
 
     check_dirs = set()
 
+    routing = None
     if args.collection:
         setup_collection_loader()
+        routing_file = 'meta/routing.yml'
+        # Load meta/routing.yml if it exists, as it may contain deprecation information
+        if os.path.isfile(routing_file):
+            try:
+                with open(routing_file) as f:
+                    routing = yaml.safe_load(f)
+            except yaml.error.MarkedYAMLError as ex:
+                print('%s:%d:%d: YAML load failed: %s' % (routing_file, ex.context_mark.line + 1, ex.context_mark.column + 1, re.sub(r'\s+', ' ', str(ex))))
+            except Exception as ex:  # pylint: disable=broad-except
+                print('%s:%d:%d: YAML load failed: %s' % (routing_file, 0, 0, re.sub(r'\s+', ' ', str(ex))))
 
     for module in args.modules:
         if os.path.isfile(module):
@@ -1857,8 +2246,9 @@ def run():
                 continue
             if ModuleValidator.is_blacklisted(path):
                 continue
-            with ModuleValidator(path, collection=args.collection, analyze_arg_spec=args.arg_spec,
-                                 base_branch=args.base_branch, git_cache=git_cache, reporter=reporter) as mv1:
+            with ModuleValidator(path, collection=args.collection, collection_version=args.collection_version,
+                                 analyze_arg_spec=args.arg_spec, base_branch=args.base_branch,
+                                 git_cache=git_cache, reporter=reporter, routing=routing) as mv1:
                 mv1.validate()
                 check_dirs.add(os.path.dirname(path))
 
@@ -1880,8 +2270,9 @@ def run():
                     continue
                 if ModuleValidator.is_blacklisted(path):
                     continue
-                with ModuleValidator(path, collection=args.collection, analyze_arg_spec=args.arg_spec,
-                                     base_branch=args.base_branch, git_cache=git_cache, reporter=reporter) as mv2:
+                with ModuleValidator(path, collection=args.collection, collection_version=args.collection_version,
+                                     analyze_arg_spec=args.arg_spec, base_branch=args.base_branch,
+                                     git_cache=git_cache, reporter=reporter, routing=routing) as mv2:
                     mv2.validate()
 
     if not args.collection:

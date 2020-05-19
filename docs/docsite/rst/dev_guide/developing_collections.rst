@@ -9,6 +9,9 @@ Developing collections
 Collections are a distribution format for Ansible content. You can use collections to package and distribute playbooks, roles, modules, and plugins.
 You can publish and use collections through `Ansible Galaxy <https://galaxy.ansible.com>`_.
 
+* For details on how to *use* collections see :ref:`collections`.
+* For the current development status of Collections and FAQ see `Ansible Collections Overview and FAQ <https://github.com/ansible-collections/overview/blob/master/README.rst>`_.
+
 .. contents::
    :local:
    :depth: 2
@@ -18,8 +21,7 @@ You can publish and use collections through `Ansible Galaxy <https://galaxy.ansi
 Collection structure
 ====================
 
-Collections follow a simple data structure. None of the directories are required unless you have specific content that belongs in one of them. A collection does require a ``galaxy.yml`` file at the root level of the collection. This file contains all of the metadata that Galaxy
-and other tools need in order to package, build and publish the collection::
+Collections follow a simple data structure. None of the directories are required unless you have specific content that belongs in one of them. A collection does require a ``galaxy.yml`` file at the root level of the collection. This file contains all of the metadata that Galaxy and other tools need in order to package, build and publish the collection::
 
     collection/
     ├── docs/
@@ -44,7 +46,7 @@ and other tools need in order to package, build and publish the collection::
 
 .. note::
     * Ansible only accepts ``.yml`` extensions for :file:`galaxy.yml`, and ``.md`` for the :file:`README` file and any files in the :file:`/docs` folder.
-    * See the `draft collection <https://github.com/bcoca/collection>`_ for an example of a full collection structure.
+    * See the `ansible-collections <https://github.com/ansible-collections/>`_ GitHub Org for examples of collection structure.
     * Not all directories are currently in use. Those are placeholders for future features.
 
 .. _galaxy_yml:
@@ -68,9 +70,9 @@ Use ``ansible-doc`` to view documentation for plugins inside a collection:
 
     ansible-doc -t lookup my_namespace.my_collection.lookup1
 
-The ``ansible-doc`` command requires the fully qualified collection name (FQCN) to display specific plugin documentation. In this example, ``my_namespace`` is the namespace and ``my_collection`` is the collection name within that namespace.
+The ``ansible-doc`` command requires the fully qualified collection name (FQCN) to display specific plugin documentation. In this example, ``my_namespace`` is the Galaxy namespace and ``my_collection`` is the collection name within that namespace.
 
-.. note:: The Ansible collection namespace is defined in the ``galaxy.yml`` file and is not equivalent to the GitHub repository name.
+.. note:: The Galaxy namespace of an Ansible collection is defined in the ``galaxy.yml`` file. It can be different from the GitHub organization or repository name.
 
 .. _collections_plugin_dir:
 
@@ -80,6 +82,8 @@ plugins directory
 Add a 'per plugin type' specific subdirectory here, including ``module_utils`` which is usable not only by modules, but by most plugins by using their FQCN. This is a way to distribute modules, lookups, filters, and so on, without having to import a role in every play.
 
 Vars plugins are unsupported in collections. Cache plugins may be used in collections for fact caching, but are not supported for inventory plugins.
+
+.. _collection_module_utils:
 
 module_utils
 ^^^^^^^^^^^^
@@ -159,20 +163,51 @@ You can migrate 'traditional roles' into a collection but they must follow the r
 
 .. note::
 
-    For roles imported into Galaxy directly from a GitHub repository, setting the ``role_name`` value in the role's
-    metadata overrides the role name used by Galaxy. For collections, that value is ignored. When importing a
-    collection, Galaxy uses the role directory as the name of the role and ignores the ``role_name`` metadata value.
+    For roles imported into Galaxy directly from a GitHub repository, setting the ``role_name`` value in the role's metadata overrides the role name used by Galaxy. For collections, that value is ignored. When importing a collection, Galaxy uses the role directory as the name of the role and ignores the ``role_name`` metadata value.
 
 playbooks directory
 --------------------
 
 TBD.
 
+.. _developing_collections_tests_directory:
+
 tests directory
 ----------------
 
-TBD. Expect tests for the collection itself to reside here.
+Ansible Collections are tested much like Ansible itself, by using the
+`ansible-test` utility which is released as part of Ansible, version 2.9.0 and
+newer. Because Ansible Collections are tested using the same tooling as Ansible
+itself, via `ansible-test`, all Ansible developer documentation for testing is
+applicable for authoring Collections Tests with one key concept to keep in mind.
 
+See :ref:`testing_collections` for specific information on how to test collections
+with ``ansible-test``.
+
+When reading the :ref:`developing_testing` documentation, there will be content
+that applies to running Ansible from source code via a git clone, which is
+typical of an Ansible developer. However, it's not always typical for an Ansible
+Collection author to be running Ansible from source but instead from a stable
+release, and to create Collections it is not necessary to run Ansible from
+source. Therefore, when references of dealing with `ansible-test` binary paths,
+command completion, or environment variables are presented throughout the
+:ref:`developing_testing` documentation; keep in mind that it is not needed for
+Ansible Collection Testing because the act of installing the stable release of
+Ansible containing `ansible-test` is expected to setup those things for you.
+
+
+.. _creating_collections_skeleton:
+
+Creating a collection skeleton
+------------------------------
+
+To start a new collection:
+
+.. code-block:: bash
+
+    collection_dir#> ansible-galaxy collection init my_namespace.my_collection
+
+Once the skeleton exists, you can populate the directories with the content you want inside the collection. See `ansible-collections <https://github.com/ansible-collections/>`_ GitHub Org to get a better idea of what you can place inside a collection.
 
 .. _creating_collections:
 
@@ -181,7 +216,7 @@ Creating collections
 
 To create a collection:
 
-#. Initialize a collection with :ref:`ansible-galaxy collection init<creating_collections_skeleton>` to create the skeleton directory structure.
+#. Create a collection skeleton with the ``collection init`` command. See :ref:`creating_collections_skeleton` above.
 #. Add your content to the collection.
 #. Build the collection into a collection artifact with :ref:`ansible-galaxy collection build<building_collections>`.
 #. Publish the collection artifact to Galaxy with :ref:`ansible-galaxy collection publish<publishing_collections>`.
@@ -197,20 +232,29 @@ Currently the ``ansible-galaxy collection`` command implements the following sub
 
 To learn more about the ``ansible-galaxy`` cli tool, see the :ref:`ansible-galaxy` man page.
 
-.. _creating_collections_skeleton:
 
-Creating a collection skeleton
-------------------------------
+.. _docfragments_collections:
 
-To start a new collection:
+Using documentation fragments in collections
+--------------------------------------------
 
-.. code-block:: bash
+To include documentation fragments in your collection:
 
-    collection_dir#> ansible-galaxy collection init my_namespace.my_collection
+#. Create the documentation fragment: ``plugins/doc_fragments/fragment_name``.
 
-Then you can populate the directories with the content you want inside the collection. See
-https://github.com/bcoca/collection to get a better idea of what you can place inside a collection.
+#. Refer to the documentation fragment with its FQCN.
 
+.. code-block:: yaml
+
+   extends_documentation_fragment:
+     - community.kubernetes.k8s_name_options
+     - community.kubernetes.k8s_auth_options
+     - community.kubernetes.k8s_resource_options
+     - community.kubernetes.k8s_scale_options
+
+:ref:`module_docs_fragments` covers the basics for documentation fragments. The `kubernetes <https://github.com/ansible-collections/kubernetes>`_ collection includes a complete example.
+
+You can also share documentation fragments across collections with the FQCN.
 
 .. _building_collections:
 
@@ -231,11 +275,10 @@ This creates a tarball of the built collection in the current directory which ca
     ├── my_namespace-my_collection-1.0.0.tar.gz
     └── ...
 
-
 .. note::
-    * Certain files and folders are excluded when building the collection artifact. See :ref:`ignoring_files_and_folders_collections`  to exclude other files you would not wish to distribute.
-    * If you used the now-deprecated ``Mazer`` tool for any of your collections, delete any and all files it added to your :file:`releases/` directory before you build your collection with ``ansible-galaxy``.
-    * The current Galaxy maximum tarball size is 2 MB.
+   * Certain files and folders are excluded when building the collection artifact. See :ref:`ignoring_files_and_folders_collections`  to exclude other files you would not wish to distribute.
+   * If you used the now-deprecated ``Mazer`` tool for any of your collections, delete any and all files it added to your :file:`releases/` directory before you build your collection with ``ansible-galaxy``.
+   * The current Galaxy maximum tarball size is 2 MB.
 
 
 This tarball is mainly intended to upload to Galaxy
@@ -301,21 +344,56 @@ Next, try using the local collection inside a playbook. For examples and more de
 Publishing collections
 ----------------------
 
-You can publish collections to Galaxy using the ``ansible-galaxy collection publish`` command or the Galaxy UI itself.
+You can publish collections to Galaxy using the ``ansible-galaxy collection publish`` command or the Galaxy UI itself. You need a namespace on Galaxy to upload your collection. See `Galaxy namespaces <https://galaxy.ansible.com/docs/contributing/namespaces.html#galaxy-namespaces>`_ on the Galaxy docsite for details.
 
 .. note:: Once you upload a version of a collection, you cannot delete or modify that version. Ensure that everything looks okay before you upload it.
 
 .. _galaxy_get_token:
 
-Getting your token or API key
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Getting your API token
+^^^^^^^^^^^^^^^^^^^^^^
 
-To upload your collection to Galaxy, you must first obtain an API token (``--api-key`` in the ``ansible-galaxy`` CLI command). The API token is a secret token used to protect your content.
+To upload your collection to Galaxy, you must first obtain an API token (``--token`` in the ``ansible-galaxy`` CLI command or ``token`` in the :file:`ansible.cfg` file under the ``galaxy_server`` section). The API token is a secret token used to protect your content.
 
 To get your API token:
 
-* For galaxy, go to the `Galaxy profile preferences <https://galaxy.ansible.com/me/preferences>`_ page and click :guilabel:`API token`.
-* For Automation Hub, go to https://cloud.redhat.com/ansible/automation-hub/token/ and click :guilabel:`Get API token` from the version dropdown.
+* For Galaxy, go to the `Galaxy profile preferences <https://galaxy.ansible.com/me/preferences>`_ page and click :guilabel:`API Key`.
+* For Automation Hub, go to https://cloud.redhat.com/ansible/automation-hub/token/ and click :guilabel:`Load token` from the version dropdown.
+
+Storing or using your API token
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Once you have retrieved your API token, you can store or use the token for collections in two ways:
+
+* Pass the token to  the ``ansible-galaxy`` command using the ``--token``.
+* Specify the token within a Galaxy server list in your :file:`ansible.cfg` file.
+
+Using the ``token`` argument
+............................
+
+You can use the ``--token`` argument with the ``ansible-galaxy`` command (in conjunction with the ``--server`` argument or :ref:`GALAXY_SERVER` setting in your :file:`ansible.cfg` file). You cannot use ``apt-key`` with any servers defined in your :ref:`Galaxy server list <galaxy_server_config>`.
+
+.. code-block:: bash
+
+    ansible-galaxy collection publish ./geerlingguy-collection-1.2.3.tar.gz --token=<key goes here>
+
+
+Specify the token within a Galaxy server list
+.............................................
+
+With this option, you configure one or more servers for Galaxy in your :file:`ansible.cfg` file under the ``galaxy_server_list`` section. For each server, you also configure the token.
+
+
+.. code-block:: ini
+
+   [galaxy]
+   server_list = release_galaxy
+
+   [galaxy_server.release_galaxy]
+   url=https://galaxy.ansible.com/
+   token=my_token
+
+See :ref:`galaxy_server_config` for complete details.
 
 .. _upload_collection_ansible_galaxy:
 
@@ -329,14 +407,17 @@ To upload the collection artifact with the ``ansible-galaxy`` command:
 
 .. code-block:: bash
 
-     ansible-galaxy collection publish path/to/my_namespace-my_collection-1.0.0.tar.gz --api-key=SECRET
+     ansible-galaxy collection publish path/to/my_namespace-my_collection-1.0.0.tar.gz
 
-The above command triggers an import process, just as if you uploaded the collection through the Galaxy website.
+.. note::
+
+	The above command assumes you have retrieved and stored your API token as part of a Galaxy server list. See :ref:`galaxy_get_token` for details.
+
+The ``ansible-galaxy collection publish`` command triggers an import process, just as if you uploaded the collection through the Galaxy website.
 The command waits until the import process completes before reporting the status back. If you wish to continue
 without waiting for the import result, use the ``--no-wait`` argument and manually look at the import progress in your
 `My Imports <https://galaxy.ansible.com/my-imports/>`_ page.
 
-The API key is a secret token used by the Galaxy server to protect your content. See :ref:`galaxy_get_token` for details.
 
 .. _upload_collection_galaxy:
 
@@ -382,6 +463,139 @@ You can experiment with migrating existing modules into a collection using the `
 	This tool is in active development and is provided only for experimentation and feedback at this point.
 
 See the `content_collector README <https://github.com/ansible/content_collector>`_ for full details and usage guidelines.
+
+BOTMETA.yml
+-----------
+
+The `BOTMETA.yml <https://github.com/ansible/ansible/blob/devel/.github/BOTMETA.yml>`_ in the ansible/ansible GitHub repository is the source of truth for:
+
+* ansibullbot
+* the docs build for collections-based modules
+
+Ansibulbot will know how to redirect existing issues and PRs to the new repo.
+The build process for docs.ansible.com will know where to find the module docs.
+
+.. code-block:: yaml
+
+   $modules/monitoring/grafana/grafana_plugin.py:
+       migrated_to: community.grafana
+   $modules/monitoring/grafana/grafana_dashboard.py:
+       migrated_to: community.grafana
+   $modules/monitoring/grafana/grafana_datasource.py:
+       migrated_to: community.grafana
+   $plugins/callback/grafana_annotations.py:
+       maintainers: $team_grafana
+       labels: monitoring grafana
+       migrated_to: community.grafana
+   $plugins/doc_fragments/grafana.py:
+       maintainers: $team_grafana
+       labels: monitoring grafana
+       migrated_to: community.grafana
+
+`Example PR <https://github.com/ansible/ansible/pull/66981/files>`_
+
+* The ``migrated_to:`` key must be added explicitly for every *file*. You cannot add ``migrated_to`` at the directory level. This is to allow module and plugin webdocs to be redirected to the new collection docs.
+* ``migrated_to:`` MUST be added for every:
+
+  * module
+  * plugin
+  * module_utils
+  * contrib/inventory script
+
+* You do NOT need to add ``migrated_to`` for:
+
+  * Unit tests
+  * Integration tests
+  * ReStructured Text docs (anything under ``docs/docsite/rst/``)
+  * Files that never existed in ``ansible/ansible:devel``
+
+.. _testing_collections:
+
+Testing collections
+===================
+
+The main tool for testing collections is ``ansible-test``, Ansible's testing tool described in :ref:`developing_testing`. You can run several compile and sanity checks, as well as run unit and integration tests for plugins using ``ansible-test``.
+
+You must always execute ``ansible-test`` from the root directory of a collection. You can run ``ansible-test`` in Docker containers without installing any special requirements. The Ansible team uses this approach in Shippable both in the ansible/ansible GitHub repository and in the large community collections such as `community.general <https://github.com/ansible-collections/community.general/>`_ and `community.network <https://github.com/ansible-collections/community.network/>`_. The examples below demonstrate running tests in Docker containers.
+
+Compile and sanity tests
+------------------------
+
+To run all compile and sanity tests::
+
+    ansible-test sanity --docker default -v
+
+See :ref:`testing_compile` and :ref:`testing_sanity` for more information. See the :ref:`full list of sanity tests <all_sanity_tests>` for details on the sanity tests and how to fix identified issues.
+
+Unit tests
+----------
+
+You must place unit tests in the appropriate``tests/unit/plugins/`` directory. For example, you would place tests for ``plugins/module_utils/foo/bar.py`` in ``tests/unit/plugins/module_utils/foo/test_bar.py`` or ``tests/unit/plugins/module_utils/foo/bar/test_bar.py``. For examples, see the `unit tests in community.general <https://github.com/ansible-collections/community.general/tree/master/tests/unit/>`_.
+
+To run all unit tests for all supported Python versions::
+
+    ansible-test units --docker default -v
+
+To run all unit tests only for a specific Python version::
+
+    ansible-test units --docker default -v --python 3.6
+
+To run only a specific unit test::
+
+    ansible-test units --docker default -v --python 3.6 tests/unit/plugins/module_utils/foo/test_bar.py
+
+You can specify Python requirements in the ``tests/unit/requirements.txt`` file. See :ref:`testing_units` for more information, especially on fixture files.
+
+Integration tests
+-----------------
+
+You must place integration tests in the appropriate ``tests/integration/targets/`` directory. For module integration tests, you can use the module name alone. For example, you would place integration tests for ``plugins/modules/foo.py`` in a directory called ``tests/integration/targets/foo/``. For non-module plugin integration tests, you must add the plugin type to the directory name. For example, you would place integration tests for ``plugins/connections/bar.py`` in a directory called ``tests/integration/targets/connection_bar/``. For lookup plugins, the directory must be called ``lookup_foo``, for inventory plugins, ``inventory_foo``, and so on.
+
+You can write two different kinds of integration tests:
+
+* Ansible role tests run with ``ansible-playbook`` and validate various aspects of the module. They can depend on other integration tests (usually named ``prepare_bar`` or ``setup_bar``, which prepare a service or install a requirement named ``bar`` in order to test module ``foo``) to set-up required resources, such as installing required libraries or setting up server services.
+* ``runme.sh`` tests run directly as scripts. They can set up inventory files, and execute ``ansible-playbook`` or ``ansible-inventory`` with various settings.
+
+For examples, see the `integration tests in community.general <https://github.com/ansible-collections/community.general/tree/master/tests/integration/targets/>`_. See also :ref:`testing_integration` for more details.
+
+Since integration tests can install requirements, and set-up, start and stop services, we recommended running them in docker containers or otherwise restricted environments whenever possible. By default, ``ansible-test`` supports Docker images for several operating systems. See the `list of supported docker images <https://github.com/ansible/ansible/blob/devel/test/lib/ansible_test/_data/completion/docker.txt>`_ for all options. Use the ``default`` image mainly for platform-independent integration tests, such as those for cloud modules. The following examples use the ``centos8`` image.
+
+To execute all integration tests for a collection::
+
+    ansible-test integration --docker centos8 -v
+
+If you want more detailed output, run the command with ``-vvv`` instead of ``-v``. Alternatively, specify ``--retry-on-error`` to automatically re-run failed tests with higher verbosity levels.
+
+To execute only the integration tests in a specific directory::
+
+    ansible-test integration --docker centos8 -v connection_bar
+
+You can specify multiple target names. Each target name is the name of a directory in ``tests/integration/targets/``.
+
+.. _hacking_collections:
+
+Contributing to collections
+===========================
+
+If you want to add functionality to an existing collection, modify a collection you are using to fix a bug, or change the behavior of a module in a collection, clone the git repository for that collection and make changes on a branch. You can combine changes to a collection with a local checkout of Ansible (``source hacking/env-setup``).
+
+This section describes the process for `community.general <https://github.com/ansible-collections/community.general/>`_. To contribute to other collections, replace the folder names ``community`` and ``general`` with the namespace and collection name of a different collection.
+
+We assume that you have included ``~/dev/ansible/collections/`` in :ref:`COLLECTIONS_PATHS`, and if that path mentions multiple directories, that you made sure that no other directory earlier in the search path contains a copy of ``community.general``. Create the directory ``~/dev/ansible/collections/ansible_collections/community``, and in it clone `the community.general Git repository <https://github.com/ansible-collections/community.general/>`_ or a fork of it into the folder ``general``::
+
+    mkdir -p ~/dev/ansible/collections/ansible_collections/community
+    cd ~/dev/ansible/collections/ansible_collections/community
+    git clone git@github.com:ansible-collections/community.general.git general
+
+If you clone a fork, add the original repository as a remote ``upstream``::
+
+    cd ~/dev/ansible/collections/ansible_collections/community/general
+    git remote add upstream git@github.com:ansible-collections/community.general.git
+
+Now you can use this checkout of ``community.general`` in playbooks and roles with whichever version of Ansible you have installed locally, including a local checkout of the ``devel`` branch.
+
+For collections hosted in the ``ansible_collections`` GitHub org, create a branch and commit your changes on the branch. When you are done (remember to add tests, see :ref:`testing_collections`), push your changes to your fork of the collection and create a Pull Request. For other collections, especially for collections not hosted on GitHub, check the ``README.md`` of the collection for information on contributing to it.
+
 
 .. seealso::
 

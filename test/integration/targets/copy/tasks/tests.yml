@@ -1338,6 +1338,26 @@
     that:
       - "dir_attrs.stat.mode == '0755'"
 
+# Test that recursive copy of a directory containing a symlink to another
+# directory, with mode=preserve and local_follow=no works.
+# See: https://github.com/ansible/ansible/issues/68471
+
+- name: Test recursive copy of dir with symlinks, mode=preserve, local_follow=False
+  copy:
+    src: '{{ role_path }}/files/subdir/'
+    dest: '{{ local_temp_dir }}/preserve_symlink/'
+    mode: preserve
+    local_follow: no
+
+- name: check that we actually used and still have a symlink
+  stat: path={{ local_temp_dir }}/preserve_symlink/subdir1/bar.txt
+  register: symlink_path
+
+- assert:
+    that:
+      - symlink_path.stat.exists
+      - symlink_path.stat.islnk
+
 #
 # I believe the below section is now covered in the recursive copying section.
 # Hold on for now as an original test case but delete once confirmed that
@@ -1467,6 +1487,22 @@
     state: absent
 
 # src is a file, dest is a non-existent directory (2 levels of directories):
+# using remote_src
+# checks that dest is created
+- include: dest_in_non_existent_directories_remote_src.yml
+  with_items:
+    - { src: 'foo.txt', dest: 'new_sub_dir1/sub_dir2/', check: 'new_sub_dir1/sub_dir2/foo.txt' }
+
+# src is a file, dest is file in a non-existent directory: checks that a failure occurs
+# using remote_src
+- include: src_file_dest_file_in_non_existent_dir_remote_src.yml
+  with_items:
+    - 'new_sub_dir1/sub_dir2/foo.txt'
+    - 'new_sub_dir1/foo.txt'
+  loop_control:
+    loop_var: 'dest'
+
+# src is a file, dest is a non-existent directory (2 levels of directories):
 # checks that dest is created
 - include: dest_in_non_existent_directories.yml
   with_items:
@@ -1483,7 +1519,6 @@
     - 'new_sub_dir1/foo.txt'
   loop_control:
     loop_var: 'dest'
-
 #
 # Recursive copying on remote host
 #
